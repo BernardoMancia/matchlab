@@ -14,18 +14,19 @@ app = FastAPI(title="MatchLab", version="1.1.0")
 def _startup():
     init_db()
 
+# Página web ("/")
 app.include_router(web_router)
 
 class PredictReq(BaseModel):
     home: str
     away: str
-    kickoff: str
+    kickoff: str  # "YYYY-MM-DD HH:MM"
     tz: Optional[str] = "America/Sao_Paulo"
     season: int
     league_id: Optional[int] = None
     recent_n: int = 5
     h2h_n: int = 10
-    mode: str = "full"
+    mode: str = "full"  # full/compact
 
 @app.get("/health")
 def health():
@@ -59,8 +60,8 @@ def latest(limit: int = 20):
 class BacktestReq(BaseModel):
     league_id: int
     season: int
-    from_date: str
-    to_date: str
+    from_date: str  # YYYY-MM-DD
+    to_date: str    # YYYY-MM-DD
 
 @app.post("/backtest/run")
 def backtest(req: BacktestReq):

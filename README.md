@@ -3,7 +3,6 @@
 ## Rodar via Docker
 1) Copie `.env.example` -> `.env` e preencha as chaves:
 - OPENAI_API_KEY
-- APIFOOTBALL_KEY
 
 2) Suba:
 ```bash

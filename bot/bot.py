@@ -18,7 +18,6 @@ from telegram.ext import (
     filters,
 )
 
-
 TZ = ZoneInfo(os.getenv("APP_TZ", "America/Sao_Paulo"))
 APIFOOTBALL_KEY = os.getenv("APIFOOTBALL_KEY")
 APIFOOTBALL_BASE_URL = os.getenv("APIFOOTBALL_BASE_URL", "https://v3.football.api-sports.io")
@@ -49,8 +48,11 @@ def parse_text_line(text: str):
 async def apifootball_team_exists(team_name: str) -> bool:
     if not APIFOOTBALL_KEY:
         raise RuntimeError("APIFOOTBALL_KEY não definido no ambiente.")
-    async with httpx.AsyncClient(timeout=20.0, base_url=APIFOOTBALL_BASE_URL,
-                                 headers={"x-apisports-key": APIFOOTBALL_KEY, "Accept":"application/json"}) as c:
+    async with httpx.AsyncClient(
+        timeout=20.0,
+        base_url=APIFOOTBALL_BASE_URL,
+        headers={"x-apisports-key": APIFOOTBALL_KEY, "Accept": "application/json"},
+    ) as c:
         r = await c.get("/teams", params={"search": team_name})
         r.raise_for_status()
         data = r.json()
@@ -58,7 +60,6 @@ async def apifootball_team_exists(team_name: str) -> bool:
 
 async def extract_from_image_openai(image_bytes: bytes) -> dict:
     client = OpenAI()
-
     b64 = base64.b64encode(image_bytes).decode("utf-8")
     data_url = f"data:image/jpeg;base64,{b64}"
 
@@ -72,12 +73,12 @@ async def extract_from_image_openai(image_bytes: bytes) -> dict:
 
     resp = client.responses.create(
         model=OPENAI_MODEL,
-        reasoning={"effort":"low"},
+        reasoning={"effort": "low"},
         input=[{
-            "role":"user",
-            "content":[
-                {"type":"text","text": prompt},
-                {"type":"input_image","image_url": data_url},
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "input_image", "image_url": data_url},
             ]
         }]
     )
@@ -86,16 +87,15 @@ async def extract_from_image_openai(image_bytes: bytes) -> dict:
     try:
         return json.loads(txt)
     except Exception:
-        return {"error":"NAO_DEU_CERTO"}
+        return {"error": "NAO_DEU_CERTO"}
 
 async def call_matchlab_predict(home: str, away: str, kickoff_sp: datetime) -> str:
-    season = kickoff_sp.year
     payload = {
         "home": home,
         "away": away,
         "kickoff": kickoff_sp.strftime("%Y-%m-%d %H:%M"),
         "tz": "America/Sao_Paulo",
-        "season": season,
+        "season": kickoff_sp.year,
         "league_id": None,
         "recent_n": 5,
         "h2h_n": 10,
@@ -139,7 +139,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Analisando…")
     report = await call_matchlab_predict(home, away, kickoff)
-    await update.message.reply_text(report[:3900])  # Telegram limita tamanho
+    await update.message.reply_text(report[:3900])
     if len(report) > 3900:
         await update.message.reply_text(report[3900:7800])
     return ConversationHandler.END
