@@ -20,14 +20,12 @@ from telegram.ext import (
     filters,
 )
 
-# ========= Logging =========
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s | %(message)s",
     level=logging.INFO,
 )
 log = logging.getLogger("matchlab-bot")
 
-# ========= Env / Config =========
 APP_TZ = os.getenv("APP_TZ", "America/Sao_Paulo")
 TZ = ZoneInfo(APP_TZ)
 
@@ -39,13 +37,9 @@ API_BASE = os.getenv("MATCHLAB_API_BASE", "http://api:8000")
 
 ASK_INPUT = 1
 
-# Texto aceito:
-# Time1 x Time2 - hh:mm - dd/mm/aaaa
 TEXT_RX = re.compile(
     r"^\s*(?P<home>.+?)\s*[xX×]\s*(?P<away>.+?)\s*-\s*(?P<hm>\d{1,2}:\d{2})\s*-\s*(?P<dmy>\d{1,2}/\d{1,2}/\d{4})\s*$"
 )
-
-# ========= Helpers =========
 
 def now_sp() -> datetime:
     return datetime.now(TZ)
@@ -63,14 +57,12 @@ def parse_text_input(text: str) -> Optional[Tuple[str, str, datetime]]:
     away = m.group("away").strip()
     hm = m.group("hm").strip()
     dmy = m.group("dmy").strip()
-
     kickoff = datetime.strptime(f"{dmy} {hm}", "%d/%m/%Y %H:%M").replace(tzinfo=TZ)
     return home, away, kickoff
 
 async def apifootball_team_exists(team_name: str) -> bool:
     if not APIFOOTBALL_KEY:
         raise RuntimeError("APIFOOTBALL_KEY não definido no ambiente (.env).")
-
     async with httpx.AsyncClient(
         timeout=20.0,
         base_url=APIFOOTBALL_BASE_URL,
@@ -81,19 +73,27 @@ async def apifootball_team_exists(team_name: str) -> bool:
         data = r.json()
         return bool(data.get("response"))
 
+def _season_for_free_plan(year: int) -> int:
+    # plano free costuma aceitar 2021-2023
+    if year >= 2023:
+        return 2023
+    if year <= 2021:
+        return 2021
+    return year
+
 async def call_predict_api(home: str, away: str, kickoff_sp: datetime) -> Dict[str, Any]:
     payload = {
         "home": home,
         "away": away,
         "kickoff": kickoff_sp.strftime("%Y-%m-%d %H:%M"),
         "tz": APP_TZ,
-        "season": kickoff_sp.year,
+        # aqui evita 2025 direto
+        "season": _season_for_free_plan(kickoff_sp.year),
         "league_id": None,
         "recent_n": 5,
         "h2h_n": 10,
         "mode": "full",
     }
-
     async with httpx.AsyncClient(timeout=120.0) as c:
         r = await c.post(f"{API_BASE}/predict", json=payload)
         if r.status_code != 200:
@@ -102,12 +102,10 @@ async def call_predict_api(home: str, away: str, kickoff_sp: datetime) -> Dict[s
 
 def extract_json_safely(s: str) -> Optional[dict]:
     s = (s or "").strip()
-    # tenta direto
     try:
         return json.loads(s)
     except Exception:
         pass
-    # tenta achar um bloco JSON dentro do texto
     start = s.find("{")
     end = s.rfind("}")
     if start != -1 and end != -1 and end > start:
@@ -118,12 +116,6 @@ def extract_json_safely(s: str) -> Optional[dict]:
     return None
 
 async def extract_from_image_openai(image_bytes: bytes) -> dict:
-    """
-    Retorna:
-      {"home": "...", "away": "...", "date_ddmmyyyy":"dd/mm/aaaa", "time_hhmm":"hh:mm"}
-    ou:
-      {"error":"NAO_DEU_CERTO"}
-    """
     if not os.getenv("OPENAI_API_KEY"):
         return {"error": "NAO_DEU_CERTO"}
 
@@ -135,10 +127,7 @@ async def extract_from_image_openai(image_bytes: bytes) -> dict:
         "Extraia os dados do jogo da imagem.\n"
         "Responda SOMENTE em JSON válido (sem texto extra) no formato EXATO:\n"
         '{"home":"...","away":"...","date_ddmmyyyy":"dd/mm/aaaa","time_hhmm":"hh:mm"}\n'
-        "Regras:\n"
-        "- Ignore odds, campeonato, textos extras.\n"
-        "- Se não der para identificar com confiança, responda: {\"error\":\"NAO_DEU_CERTO\"}\n"
-        "- Use dd/mm/aaaa e hh:mm."
+        "Se não conseguir, responda: {\"error\":\"NAO_DEU_CERTO\"}"
     )
 
     try:
@@ -169,39 +158,29 @@ def normalize_kickoff_from_image(data: dict) -> Optional[Tuple[str, str, datetim
     away = (data.get("away") or "").strip()
     dmy = (data.get("date_ddmmyyyy") or "").strip()
     hm = (data.get("time_hhmm") or "").strip()
-
     if not home or not away or not dmy or not hm:
         return None
-
     try:
         kickoff = datetime.strptime(f"{dmy} {hm}", "%d/%m/%Y %H:%M").replace(tzinfo=TZ)
     except Exception:
         return None
-
     return home, away, kickoff, dmy, hm
 
-# ========= Telegram Handlers =========
-
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Use /prever para prever um jogo.\n"
-        "Cancelamento: /cancelar"
-    )
+    await update.message.reply_text("Use /prever. Cancelamento: /cancelar")
 
 async def cmd_prever(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Envie a imagem com data e hora OU envie no formato:\n"
         "Time1 x Time2 - hh:mm - dd/mm/aaaa\n"
-        "Ex: Flamengo x Palmeiras - 21:30 - 12/10/2025"
+        "Ex: Vasco da Gama x Corinthians - 21:30 - 20/12/2025"
     )
     return ASK_INPUT
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (update.message.text or "").strip()
-    parsed = parse_text_input(text)
-
+    parsed = parse_text_input((update.message.text or "").strip())
     if not parsed:
-        await update.message.reply_text("Não deu certo. Use exatamente: Time1 x Time2 - hh:mm - dd/mm/aaaa")
+        await update.message.reply_text("Não deu certo. Use: Time1 x Time2 - hh:mm - dd/mm/aaaa")
         return ASK_INPUT
 
     home, away, kickoff = parsed
@@ -210,7 +189,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Esse horário já passou (fuso São Paulo).")
         return ConversationHandler.END
 
-    # valida times
     if not await apifootball_team_exists(home):
         await update.message.reply_text(f"Time não encontrado: {home}")
         return ConversationHandler.END
@@ -220,7 +198,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Analisando…")
     result = await call_predict_api(home, away, kickoff)
-
     if result.get("error"):
         await update.message.reply_text(f"Erro na API: {result.get('error')}\n{result.get('raw','')}")
         return ConversationHandler.END
@@ -239,12 +216,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = await extract_from_image_openai(image_bytes)
     norm = normalize_kickoff_from_image(data)
-
     if not norm:
-        await update.message.reply_text(
-            "Não deu certo extrair da imagem.\n"
-            "Envie no formato: Time1 x Time2 - hh:mm - dd/mm/aaaa"
-        )
+        await update.message.reply_text("Não deu certo extrair da imagem. Use: Time1 x Time2 - hh:mm - dd/mm/aaaa")
         return ASK_INPUT
 
     home, away, kickoff, dmy, hm = norm
@@ -262,7 +235,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"Entendi: {home} x {away} — {hm} — {dmy}\nAnalisando…")
     result = await call_predict_api(home, away, kickoff)
-
     if result.get("error"):
         await update.message.reply_text(f"Erro na API: {result.get('error')}\n{result.get('raw','')}")
         return ConversationHandler.END
@@ -279,8 +251,6 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
     log.exception("Erro no bot: %s", context.error)
-
-# ========= Main =========
 
 def main():
     token = os.getenv("TELEGRAM_BOT_TOKEN")
