@@ -15,8 +15,10 @@ services:
       - MATCHLAB_API_BASE=http://api:8000
     depends_on:
       - api
-    command: ["python", "-m", "bot.bot"]
-    working_dir: /app/matchlab
+    command: ["python", "/app/bot/bot.py"]
+    working_dir: /app
+
+
     ports:
       - "19204:19204"
     restart: unless-stopped
