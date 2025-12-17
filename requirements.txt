@@ -5,13 +5,6 @@ openai==1.55.3
 pydantic==2.10.3
 python-dotenv==1.0.1
 jinja2==3.1.4
-
 python-telegram-bot==22.5
 pandas==2.2.3
 numpy==2.1.3
-<<<<<<< Updated upstream
-jinja2==3.1.4
-python-telegram-bot==22.5
-=======
-python-multipart
->>>>>>> Stashed changes
