@@ -12,20 +12,22 @@ from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    MessageHandler,
+ MessageHandler,
     ContextTypes,
     ConversationHandler,
     filters,
 )
 
 TZ = ZoneInfo(os.getenv("APP_TZ", "America/Sao_Paulo"))
+
 APIFOOTBALL_KEY = os.getenv("APIFOOTBALL_KEY")
 APIFOOTBALL_BASE_URL = os.getenv("APIFOOTBALL_BASE_URL", "https://v3.football.api-sports.io")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5")
 
-API_BASE = os.getenv("MATCHLAB_API_BASE", "http://api:8000")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # seguro e rápido
+API_BASE = os.getenv("MATCHLAB_API_BASE", "http://api:8000")  # rede interna docker
 
 ASK_INPUT = 1
+
 
 RX = re.compile(
     r"^\s*(?P<home>.+?)\s*[xX×]\s*(?P<away>.+?)\s*-\s*(?P<hm>\d{1,2}:\d{2})\s*-\s*(?P<dmy>\d{1,2}/\d{1,2}/\d{4})\s*$"
@@ -40,10 +42,10 @@ def parse_text_line(text: str):
         return None
     home = m.group("home").strip()
     away = m.group("away").strip()
-    hm = m.group("hm")
-    dmy = m.group("dmy")
-    dt = datetime.strptime(f"{dmy} {hm}", "%d/%m/%Y %H:%M").replace(tzinfo=TZ)
-    return home, away, dt
+    hm = m.group("hm").strip()
+    dmy = m.group("dmy").strip()
+    kickoff = datetime.strptime(f"{dmy} {hm}", "%d/%m/%Y %H:%M").replace(tzinfo=TZ)
+    return home, away, kickoff
 
 async def apifootball_team_exists(team_name: str) -> bool:
     if not APIFOOTBALL_KEY:
@@ -59,32 +61,44 @@ async def apifootball_team_exists(team_name: str) -> bool:
         return bool(data.get("response"))
 
 async def extract_from_image_openai(image_bytes: bytes) -> dict:
+    """
+    Extrai home/away/data/hora de uma imagem usando visão.
+    Retorna dict:
+      {"home": "...", "away": "...", "date_ddmmyyyy":"dd/mm/aaaa", "time_hhmm":"hh:mm"}
+    ou {"error":"NAO_DEU_CERTO"}
+    """
+    # Se não tiver chave, falha controlada
+    if not os.getenv("OPENAI_API_KEY"):
+        return {"error": "NAO_DEU_CERTO"}
+
     client = OpenAI()
     b64 = base64.b64encode(image_bytes).decode("utf-8")
     data_url = f"data:image/jpeg;base64,{b64}"
 
     prompt = (
         "Extraia os dados do jogo da imagem.\n"
-        "Responda SOMENTE em JSON válido, sem texto extra, no formato:\n"
+        "Responda SOMENTE em JSON válido, sem texto extra, no formato EXATO:\n"
         '{"home":"...","away":"...","date_ddmmyyyy":"dd/mm/aaaa","time_hhmm":"hh:mm"}\n'
-        "Se não conseguir, responda:\n"
-        '{"error":"NAO_DEU_CERTO"}'
+        "Regras:\n"
+        "- Se a imagem tiver campeonato/odds/nomes extras, ignore.\n"
+        "- Se não conseguir extrair com confiança, responda: {\"error\":\"NAO_DEU_CERTO\"}\n"
     )
 
-    resp = client.responses.create(
-        model=OPENAI_MODEL,
-        reasoning={"effort": "low"},
-        input=[{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "input_image", "image_url": data_url},
-            ]
-        }]
-    )
-
-    txt = resp.output_text.strip()
     try:
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                }
+            ],
+            temperature=0.0,
+        )
+        txt = (resp.choices[0].message.content or "").strip()
         return json.loads(txt)
     except Exception:
         return {"error": "NAO_DEU_CERTO"}
@@ -99,20 +113,26 @@ async def call_matchlab_predict(home: str, away: str, kickoff_sp: datetime) -> s
         "league_id": None,
         "recent_n": 5,
         "h2h_n": 10,
-        "mode": "full"
+        "mode": "full",
     }
 
-    async with httpx.AsyncClient(timeout=90.0) as c:
+    async with httpx.AsyncClient(timeout=120.0) as c:
         r = await c.post(f"{API_BASE}/predict", json=payload)
         if r.status_code != 200:
             return f"Falhou ao prever (HTTP {r.status_code}):\n{r.text}"
         data = r.json()
         return data.get("report") or json.dumps(data, ensure_ascii=False, indent=2)
 
+def chunk_text(s: str, size: int = 3800):
+    s = s or ""
+    for i in range(0, len(s), size):
+        yield s[i:i + size]
+
+
 async def start_prever(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Envie a imagem com data e hora OU diga:\n"
-        "Time1 x Time2 - hora:minuto - dia/mês/ano\n"
+        "Envie a imagem com data e hora OU envie no formato:\n"
+        "Time1 x Time2 - hh:mm - dd/mm/aaaa\n"
         "Ex: Fenerbahce x Konyaspor - 14:00 - 15/12/2025"
     )
     return ASK_INPUT
@@ -126,10 +146,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     home, away, kickoff = parsed
 
+    # valida horário SP
     if kickoff <= now_sp():
         await update.message.reply_text("Esse horário já passou (fuso São Paulo).")
         return ConversationHandler.END
 
+    # valida time existe
     if not await apifootball_team_exists(home):
         await update.message.reply_text(f"Time não encontrado: {home}")
         return ConversationHandler.END
@@ -139,9 +161,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("Analisando…")
     report = await call_matchlab_predict(home, away, kickoff)
-    await update.message.reply_text(report[:3900])
-    if len(report) > 3900:
-        await update.message.reply_text(report[3900:7800])
+    for part in chunk_text(report):
+        await update.message.reply_text(part)
+
     return ConversationHandler.END
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -152,7 +174,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = await extract_from_image_openai(image_bytes)
     if data.get("error"):
-        await update.message.reply_text("Não deu certo extrair da imagem. Envie no formato: Time1 x Time2 - hh:mm - dd/mm/aaaa")
+        await update.message.reply_text(
+            "Não deu certo extrair da imagem.\n"
+            "Envie no formato: Time1 x Time2 - hh:mm - dd/mm/aaaa"
+        )
         return ASK_INPUT
 
     home = (data.get("home") or "").strip()
@@ -160,19 +185,26 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dmy = (data.get("date_ddmmyyyy") or "").strip()
     hm = (data.get("time_hhmm") or "").strip()
 
+    # valida
+    if not home or not away or not dmy or not hm:
+        await update.message.reply_text(
+            "Não deu certo interpretar a imagem.\n"
+            "Envie outra imagem ou use: Time1 x Time2 - hh:mm - dd/mm/aaaa"
+        )
+        return ASK_INPUT
+
     try:
         kickoff = datetime.strptime(f"{dmy} {hm}", "%d/%m/%Y %H:%M").replace(tzinfo=TZ)
     except Exception:
-        await update.message.reply_text("Não deu certo interpretar data/hora da imagem. Tente outra imagem ou envie texto no formato correto.")
+        await update.message.reply_text(
+            "Não deu certo interpretar data/hora da imagem.\n"
+            "Tente outra imagem ou envie texto no formato correto."
+        )
         return ASK_INPUT
 
     if kickoff <= now_sp():
         await update.message.reply_text("Esse horário já passou (fuso São Paulo).")
         return ConversationHandler.END
-
-    if not home or not away:
-        await update.message.reply_text("Não deu certo pegar os nomes dos times na imagem.")
-        return ASK_INPUT
 
     if not await apifootball_team_exists(home):
         await update.message.reply_text(f"Time não encontrado: {home}")
@@ -183,9 +215,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"Entendi: {home} x {away} — {hm} — {dmy}\nAnalisando…")
     report = await call_matchlab_predict(home, away, kickoff)
-    await update.message.reply_text(report[:3900])
-    if len(report) > 3900:
-        await update.message.reply_text(report[3900:7800])
+    for part in chunk_text(report):
+        await update.message.reply_text(part)
+
     return ConversationHandler.END
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
