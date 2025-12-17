@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MatchLab</title>
+  <style>
+    body{font-family:system-ui,Arial;max-width:900px;margin:40px auto;padding:0 16px}
+    input,button{padding:10px;font-size:16px}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .card{border:1px solid #ddd;border-radius:12px;padding:16px;margin-top:16px}
+    pre{white-space:pre-wrap}
+  </style>
+</head>
+<body>
+  <h1>MatchLab — Prever</h1>
+
+  <div class="card">
+    <p>Preencha e clique em prever. (Kickoff: <b>YYYY-MM-DD HH:MM</b> no fuso de São Paulo)</p>
+
+    <div class="row">
+      <input id="home" placeholder="Time da casa" />
+      <input id="away" placeholder="Time visitante" />
+    </div>
+    <div class="row" style="margin-top:10px">
+      <input id="kickoff" placeholder="2025-12-15 14:00" />
+      <input id="season" placeholder="2025" />
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button onclick="predict()">Prever</button>
+    </div>
+  </div>
+
+  <div class="card" id="out" style="display:none">
+    <h3>Resultado</h3>
+    <pre id="txt"></pre>
+  </div>
+
+<script>
+async function predict() {
+  const payload = {
+    home: document.getElementById("home").value.trim(),
+    away: document.getElementById("away").value.trim(),
+    kickoff: document.getElementById("kickoff").value.trim(),
+    tz: "America/Sao_Paulo",
+    season: parseInt(document.getElementById("season").value.trim(), 10),
+    league_id: null,
+    recent_n: 5,
+    h2h_n: 10,
+    mode: "full"
+  };
+
+  const r = await fetch("/predict", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify(payload)
+  });
+
+  const out = document.getElementById("out");
+  const txt = document.getElementById("txt");
+  out.style.display = "block";
+  txt.textContent = await r.text();
+}
+</script>
+</body>
+</html>
